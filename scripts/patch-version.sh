@@ -13,11 +13,24 @@ set -euo pipefail
 # relx's in-place rebuild has already overwritten old-ref's own
 # releases/<vsn>/ and lib/<app>-<vsn>/ directories, with nothing left to
 # diff against.
-REF="$1"
-RELEASE_NAME="$2"
-WORKING_DIRECTORY="${3:-.}"
-
-SUFFIX="${REF:0:12}"
+#
+# build-release.sh sources this file - rather than executing it as a
+# separate process - specifically so it can do so BEFORE its own
+# `git checkout --force "$REF"`. This repo's own CI builds its fixture
+# app from inside this same repository (old-ref/new-ref are commits in
+# relup-guard-erlang's own history, not a separate consumer repo's), so
+# checking out an old-ref that predates this file would otherwise
+# delete it from disk before a later, separate `patch-version.sh`
+# process invocation could even start - a real consumer never hits
+# this, since its own checkout never touches the action's own files,
+# which live under a separate, already-resolved action_path.
+#
+# REF, RELEASE_NAME, WORKING_DIRECTORY, and SUFFIX are build-release.sh's
+# own variables, already set by the time it sources this file - defining
+# the functions below against them here, rather than re-declaring them
+# as this script's own positional parameters, is what makes sourcing
+# before the checkout equivalent to running this as its own process
+# after it.
 
 # A plain recursive search for *.app.src covers a single-app project
 # (src/<app>.app.src) and an umbrella (apps/*/src/<app>.app.src) alike,
@@ -90,6 +103,3 @@ patch_relx_release_vsn() {
   perl -i -pe "s/\\{release, *\\{${RELEASE_NAME}, *\"\\Q${vsn}\\E\"/{release, {${RELEASE_NAME}, \"${vsn}+${SUFFIX}\"/" "$rebar_config"
   echo "Patched ${rebar_config}: release ${RELEASE_NAME} vsn ${vsn} -> ${vsn}+${SUFFIX}"
 }
-
-patch_app_versions
-patch_relx_release_vsn

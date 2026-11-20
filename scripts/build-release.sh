@@ -16,14 +16,20 @@ BUILD_COMMAND="${4:-rebar3 as ${PROFILE} release}"
 EXCLUDE_VERSION="${5:-}"
 WORKING_DIRECTORY="${6:-.}"
 PREVIOUS_VERSION="${7:-}"
+SUFFIX="${REF:0:12}"
+
+# Sourced, not run as its own process, and BEFORE the checkout below -
+# see patch-version.sh's own top comment for why.
+# shellcheck source=patch-version.sh
+source "$(dirname "${BASH_SOURCE[0]}")/patch-version.sh"
 
 git checkout --force "$REF"
 
 # Appends a build-only suffix to every vsn this project defines, so a
 # relup has something real to diff even when nobody bumped a vsn by hand
-# for this change - see patch-version.sh for why this has to happen now,
-# before the build, rather than reactively after the fact.
-"$(dirname "${BASH_SOURCE[0]}")/patch-version.sh" "$REF" "$RELEASE_NAME" "$WORKING_DIRECTORY"
+# for this change.
+patch_app_versions
+patch_relx_release_vsn
 
 cd "$WORKING_DIRECTORY" || exit 1
 bash -euo pipefail -c "$BUILD_COMMAND"
