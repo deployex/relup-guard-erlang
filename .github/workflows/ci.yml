@@ -16,7 +16,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck scripts/*.sh
+      # -x: follow `source`d files (patch-version.sh, sourced by
+      # build-release.sh) rather than treating each script as fully
+      # self-contained - without it, shellcheck can't see that
+      # build-release.sh's own SUFFIX is used inside patch-version.sh's
+      # function, and flags it as unused (SC2034).
+      - run: shellcheck -x scripts/*.sh
 
   self-test:
     runs-on: ubuntu-24.04

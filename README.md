@@ -149,34 +149,36 @@ If the schema needs to exist before the release will boot, run migrations agains
 
 1. **Resolve old-ref and new-ref to commit SHAs first, before anything checks either one out.**
    This has to happen against the calling workflow's own pristine checkout: once old-ref is checked out in the next step, the literal string `"HEAD"` - new-ref's own default - no longer means "the commit the job originally checked out", it means "whatever we're currently sitting on", which by then is old-ref itself.
-2. **Build old-ref, then new-ref, in the same working directory.**
+2. **Before each build, append a build-only suffix derived from that ref's own commit SHA to every `app.src` vsn found, plus the relx release tuple's own vsn if it's a literal.**
+   A relup needs two distinct *application* versions to generate anything against - OTP's relup/appup mechanism is keyed on each app's own vsn, not on whether the underlying code actually changed - so without this, a PR that changes code without also bumping `app.src` by hand would have nothing to test. old-ref and new-ref always resolve to different commits, so they always get a different suffix, and a relup is always generated and tested for real. This only ever touches the ephemeral checkout, never anything committed.
+3. **Build old-ref, then new-ref, in the same working directory.**
    relx preserves each version's own `releases/<vsn>/` and `lib/<app>-<vsn>/` directories across in-place rebuilds in the same profile, which `rebar3_appup_plugin` needs to diff old against new, so the two builds have to be sequential in place rather than in isolated worktrees.
-3. **For new-ref specifically: generate the appup, then package the tarball by hand.**
-   `rebar3 appup generate` (pointed at both versions explicitly - its own defaults don't do anything useful once two versions coexist) writes the `.appup` file into a shared, unversioned location, not into the assembled release's own `lib/<app>-<new-vsn>/ebin/` - this action copies it there itself, along with a flat `releases/<name>-<vsn>.rel` (see step 5). The tarball is then built with a plain `tar`, not relx's own `tar` command: that command always re-triggers a fresh release assembly first, which silently wipes anything placed directly under `releases/` moments earlier, including that flat `.rel` file.
-4. **Fail fast if the versions are identical.**
-   A relup needs two distinct versions to exist at all.
-5. **Boot the old release as a daemon**, under a node name and cookie unique to this run (see the note on `vm.args` above) and with Erlang distribution restricted to loopback.
-6. **Unpack the new release into it** via `release_handler:unpack_release/1`, which places the new `.rel` and `lib/<app>-<new-version>/ebin` alongside the old ones on the already-running node.
+4. **For new-ref specifically: generate the appup, then package the tarball by hand.**
+   `rebar3 appup generate` (pointed at both versions explicitly - its own defaults don't do anything useful once two versions coexist) writes the `.appup` file into a shared, unversioned location, not into the assembled release's own `lib/<app>-<new-vsn>/ebin/` - this action copies it there itself, along with a flat `releases/<name>-<vsn>.rel` (see step 6). The tarball is then built with a plain `tar`, not relx's own `tar` command: that command always re-triggers a fresh release assembly first, which silently wipes anything placed directly under `releases/` moments earlier, including that flat `.rel` file.
+5. **Fail fast if the versions are still identical.**
+   The one case step 2's suffix can't paper over: old-ref and new-ref resolving to the exact same commit, which gets the exact same suffix too, and genuinely has no second version to relup against.
+6. **Boot the old release as a daemon**, under a node name and cookie unique to this run (see the note on `vm.args` above) and with Erlang distribution restricted to loopback.
+7. **Unpack the new release into it** via `release_handler:unpack_release/1`, which places the new `.rel` and `lib/<app>-<new-version>/ebin` alongside the old ones on the already-running node.
    If the tarball is missing the flat `.rel` file, this fails with a specific explanation naming that exact missing path, rather than the raw `{error, {enoent, Path}}` tuple `unpack_release/1` itself returns.
-7. **Synthesize the relup** via `systools:make_relup/4`, now that both versions' `.rel` files and the new version's `.appup` file coexist on that node - this is the step most naive "does it build" checks skip entirely.
+8. **Synthesize the relup** via `systools:make_relup/4`, now that both versions' `.rel` files and the new version's `.appup` file coexist on that node - this is the step most naive "does it build" checks skip entirely.
    Any warnings `systools` returns (not just its errors) are surfaced as a `::warning::` annotation rather than silently discarded - a relup that "succeeds" with warnings often means `systools` fell back to a cruder instruction than intended, such as reloading everything for a dependency that bumped version with no `.appup` of its own.
    Set `fail-on-relup-warnings: true` to turn that `::warning::` into a build failure instead, the same "warnings as errors" choice many build and lint tools offer.
    Separately, `relup-guard-erlang` also checks the relup for modules that get loaded but never started: if the new version introduces a module this node didn't have loaded before, and the upgrade script has no `apply` instruction anywhere, that's surfaced the same way (and controlled by the same `fail-on-relup-warnings` flag).
    This is a real gap in auto-generated appups, not a hypothetical one: a module *loading* successfully says nothing about whether it was wired into a supervisor, because `load`/`load_object_code` only load code - starting a new supervised child needs its own explicit `apply` instruction (e.g. `supervisor:start_child`), per the OTP appup cookbook's documented pattern for this exact case.
    A module flagged this way is not necessarily a bug - plenty of new modules aren't processes that need starting - so this stays a warning by default rather than a failure.
-8. **Apply it for real, bounded by `upgrade-timeout-seconds`**: `release_handler:check_install_release/1`, `release_handler:install_release/2`, then `release_handler:make_permanent/1`.
+9. **Apply it for real, bounded by `upgrade-timeout-seconds`**: `release_handler:check_install_release/1`, `release_handler:install_release/2`, then `release_handler:make_permanent/1`.
    A hang here (a process not acknowledging `code_change`, a deadlocked supervisor) is killed and reported as a timeout rather than silently eating the calling job's own multi-hour default timeout. The kill is forced, not just requested: `timeout(1)`'s default signal alone is not enough here, since the underlying process does not always die promptly on it while genuinely blocked, so a short grace period followed by `SIGKILL` keeps the actual wall-clock time close to what `upgrade-timeout-seconds` promises.
-9. **Confirm the new version is actually the one left running**, via `release_handler:which_releases/0`, rather than trusting that the install calls alone imply success.
-10. **Confirm the OS process never restarted**, by comparing the node's OS pid before and after.
+10. **Confirm the new version is actually the one left running**, via `release_handler:which_releases/0`, rather than trusting that the install calls alone imply success.
+11. **Confirm the OS process never restarted**, by comparing the node's OS pid before and after.
     The entire point of a hot upgrade is that the running process survives it; `which_releases/0` alone can't tell a genuine in-place code swap from a disguised full restart (a stray `restart_new_emulator` instruction, or an init system quietly restarting a crashed node) that happens to land on the right version anyway.
-11. **Stop the node** and report pass/fail.
-12. **Write old-version, new-version, and the result to the job's Summary tab**, via `$GITHUB_STEP_SUMMARY` - the same convention `actions/cache` and other popular actions use so the outcome is visible at a glance without opening step logs, even when an earlier step failed first. `$GITHUB_STEP_SUMMARY` is scoped to the step that writes it, though: a later step in the calling workflow can't read this content back through that same env var, even within the same job - use the `had-warnings` output instead for that.
+12. **Stop the node** and report pass/fail.
+13. **Write old-version, new-version, and the result to the job's Summary tab**, via `$GITHUB_STEP_SUMMARY` - the same convention `actions/cache` and other popular actions use so the outcome is visible at a glance without opening step logs, even when an earlier step failed first. `$GITHUB_STEP_SUMMARY` is scoped to the step that writes it, though: a later step in the calling workflow can't read this content back through that same env var, even within the same job - use the `had-warnings` output instead for that.
     A success with `fail-on-relup-warnings` left false but a warning raised anyway shows as its own distinct "⚠️ succeeded, with warnings" result, not an indistinguishable plain "✅" - otherwise the summary's whole point (visible at a glance) would fail silently for exactly the runs it matters most for.
 
 ## What this does not do (yet)
 
 - **Version-bump convention enforcement.**
-  v1 only checks that the upgrade executes correctly, with no opinion on whether the version bump itself was the "right size" for the change.
+  Since `relup-guard-erlang` appends its own build-only suffix regardless of whether `app.src`'s vsn was bumped by hand, v1 has no opinion on whether a real version bump happened at all, or whether its size matched the change.
   That can be layered on top later as an optional check.
 - **A pristine checkout afterward.**
   Because old-ref and new-ref are built sequentially in place, the repository ends up checked out at `new-ref`, with build artifacts from both versions in `_build`.

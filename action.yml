@@ -154,6 +154,12 @@ runs:
         OLD_VERSION: ${{ steps.build-old.outputs.version }}
       run: '"${{ github.action_path }}/scripts/build-release.sh" "$REF" "$RELEASE_NAME" "$PROFILE" "$BUILD_COMMAND" "$OLD_VERSION" "$WORKING_DIRECTORY" "$OLD_VERSION"'
 
+    # build-release.sh already appends a build-only suffix derived from
+    # each ref's own commit SHA to every vsn it found, specifically so
+    # this never fires just because nobody bumped a vsn by hand. The one
+    # case it still catches: old-ref and new-ref resolving to the exact
+    # same commit, which gets the exact same suffix too, and genuinely
+    # has no second version to relup against.
     - name: Check old-ref and new-ref actually differ
       shell: bash
       env:
@@ -161,7 +167,7 @@ runs:
         NEW_VERSION: ${{ steps.build-new.outputs.version }}
       run: |
         if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
-          echo "::error title=old-ref and new-ref produced the same version::Both resolved to ${NEW_VERSION}. Bump the release's app.src vsn so a relup can be generated and tested."
+          echo "::error title=old-ref and new-ref produced the same version::Both resolved to ${NEW_VERSION}. old-ref and new-ref most likely resolved to the exact same commit - there's no second version to relup against."
           exit 1
         fi
 

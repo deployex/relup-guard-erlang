@@ -16,8 +16,20 @@ BUILD_COMMAND="${4:-rebar3 as ${PROFILE} release}"
 EXCLUDE_VERSION="${5:-}"
 WORKING_DIRECTORY="${6:-.}"
 PREVIOUS_VERSION="${7:-}"
+SUFFIX="${REF:0:12}"
+
+# Sourced, not run as its own process, and BEFORE the checkout below -
+# see patch-version.sh's own top comment for why.
+# shellcheck source=scripts/patch-version.sh
+source "$(dirname "${BASH_SOURCE[0]}")/patch-version.sh"
 
 git checkout --force "$REF"
+
+# Appends a build-only suffix to every vsn this project defines, so a
+# relup has something real to diff even when nobody bumped a vsn by hand
+# for this change.
+patch_app_versions
+patch_relx_release_vsn
 
 cd "$WORKING_DIRECTORY" || exit 1
 bash -euo pipefail -c "$BUILD_COMMAND"
@@ -51,7 +63,7 @@ if [ "${#VERSION_DIRS[@]}" -gt 0 ]; then
 fi
 
 if [ "${#CANDIDATES[@]}" -ne 1 ]; then
-  echo "::error title=Expected exactly one new release version::${RELEASE_ROOT}/releases at ${REF} has ${#CANDIDATES[@]} version(s) other than '${EXCLUDE_VERSION:-<none>}': ${CANDIDATES[*]:-none}. Check that the release's own vsn (in its .app.src, not just relx's release tuple in rebar.config - they are separate) was actually bumped."
+  echo "::error title=Expected exactly one new release version::${RELEASE_ROOT}/releases at ${REF} has ${#CANDIDATES[@]} version(s) other than '${EXCLUDE_VERSION:-<none>}': ${CANDIDATES[*]:-none}. relup-guard-erlang already appends a build-only, per-commit suffix to every vsn it found, so this almost always means old-ref and new-ref resolved to the exact same commit - there's nothing to build a second version from. If they're genuinely different commits, check that the relx release tuple in rebar.config actually names '${RELEASE_NAME}' and uses a literal vsn string or 'semver', not something this action's patching step couldn't recognize."
   exit 1
 fi
 
@@ -98,7 +110,7 @@ if [ -n "$PREVIOUS_VERSION" ] && [ "${#EXISTING_APPUPS[@]}" -eq 0 ]; then
 
   GENERATED_APPUP="_build/${PROFILE}/lib/${RELEASE_NAME}/ebin/${RELEASE_NAME}.appup"
   if [ ! -f "$GENERATED_APPUP" ]; then
-    echo "::error title=No appup generated::Expected ${GENERATED_APPUP} after 'rebar3 appup generate' diffing ${PREVIOUS_VERSION} against ${VERSION}, but it wasn't created. The most common cause is the release's own .app.src vsn not having actually changed between old-ref and new-ref."
+    echo "::error title=No appup generated::Expected ${GENERATED_APPUP} after 'rebar3 appup generate' diffing ${PREVIOUS_VERSION} against ${VERSION}, but it wasn't created. relup-guard-erlang already appends a build-only suffix to '${RELEASE_NAME}.app.src' so its vsn always changes, so this is more likely rebar3_appup_plugin itself failing to find or diff that app - check the step's own log above for its actual output."
     exit 1
   fi
 
