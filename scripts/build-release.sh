@@ -20,7 +20,7 @@ SUFFIX="${REF:0:12}"
 
 # Sourced, not run as its own process, and BEFORE the checkout below -
 # see patch-version.sh's own top comment for why.
-# shellcheck source=patch-version.sh
+# shellcheck source=scripts/patch-version.sh
 source "$(dirname "${BASH_SOURCE[0]}")/patch-version.sh"
 
 git checkout --force "$REF"
