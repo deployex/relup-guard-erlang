@@ -40,7 +40,7 @@ jobs:
 
       - uses: ./
         with:
-          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          old-ref: 6bc44fde42d4466bf1d340e9580eca5c0dbba9a9
           new-ref: ${{ github.sha }}
           release-name: relup_demo
           working-directory: fixtures/demo_app
@@ -63,7 +63,7 @@ jobs:
 
       - uses: ./
         with:
-          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          old-ref: 6bc44fde42d4466bf1d340e9580eca5c0dbba9a9
           # new-ref deliberately omitted - relying on the documented default.
           release-name: relup_demo
           working-directory: fixtures/demo_app
@@ -154,7 +154,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          old-ref: 6bc44fde42d4466bf1d340e9580eca5c0dbba9a9
           new-ref: ${{ github.sha }}
           release-name: relup_demo
           working-directory: fixtures/demo_app
@@ -188,7 +188,7 @@ jobs:
         id: relup-guard-erlang
         uses: ./
         with:
-          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6 # relup_worker2 does not exist yet
+          old-ref: 6bc44fde42d4466bf1d340e9580eca5c0dbba9a9 # relup_worker2 does not exist yet
           new-ref: ${{ github.sha }} # relup_worker2 added with no apply instruction
           release-name: relup_demo
           working-directory: fixtures/demo_app
@@ -226,7 +226,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          old-ref: 6bc44fde42d4466bf1d340e9580eca5c0dbba9a9
           new-ref: ${{ github.sha }}
           release-name: relup_demo
           working-directory: fixtures/demo_app
@@ -281,8 +281,8 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          old-ref: 57193e432d9e60f6d2698317f1812201a5eaf262 # fixtures/stuck-worker: relup_stuck_worker already stuck
-          new-ref: 708374cb42dd685d7e139c51844dceff97793d5c # fixtures/stuck-worker: relup_stuck_worker's code changed
+          old-ref: fb7588b524407586e18d52e45465682f39a7a94e # fixtures/stuck-worker: relup_stuck_worker already stuck
+          new-ref: 2036a02e63da4d705ec1d8c1dfbb91be01f4bf1e # fixtures/stuck-worker: relup_stuck_worker's code changed
           release-name: relup_demo
           working-directory: fixtures/demo_app
           upgrade-timeout-seconds: "10"
