@@ -40,6 +40,17 @@ cd "$EXTRACT_DIR" || exit 1
 # cookie: a fixed name is fine on a GitHub-hosted runner (a fresh VM per
 # job), but would collide with anything else using the release's own
 # default node name on a reused self-hosted runner.
+#
+# -name (a long name pinned to 127.0.0.1), not -sname: a short name's
+# resolution depends on the host's own hostname setup, which varies
+# across environments in ways that can leave the node unreachable under
+# the name it just registered - the extended start script's own
+# daemon/start-up wait loop (`while ! erl_rpc erlang is_alive; do sleep 1;
+# done`) has no timeout at all, so a node that can't be reached under its
+# own name hangs that loop forever rather than failing. A long name
+# pinned to a literal loopback address sidesteps hostname resolution
+# entirely, the same reason the Mix side's own default node naming
+# convention does the same.
 VM_ARGS_FILE="releases/${OLD_VERSION}/vm.args"
 if [ -f "$VM_ARGS_FILE" ]; then
   # A temp file plus mv, not `sed -i`: BSD sed (macOS, used for local
@@ -47,7 +58,7 @@ if [ -f "$VM_ARGS_FILE" ]; then
   # runs on) take that flag's in-place-edit suffix differently, so this
   # avoids the discrepancy entirely rather than special-casing it.
   sed \
-    -e "s/^-s\{0,1\}name .*/-sname relup_guard_erlang_old_${UNIQUE_SUFFIX}/" \
+    -e "s/^-s\{0,1\}name .*/-name relup_guard_erlang_old_${UNIQUE_SUFFIX}@127.0.0.1/" \
     -e "s/^-setcookie .*/-setcookie relup-guard-erlang-${UNIQUE_SUFFIX}/" \
     "$VM_ARGS_FILE" > "${VM_ARGS_FILE}.tmp"
   mv "${VM_ARGS_FILE}.tmp" "$VM_ARGS_FILE"
@@ -72,20 +83,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Booting old release (${OLD_VERSION}) as a daemon..."
-./bin/"${RELEASE_NAME}" daemon
+echo "Booting old release (${OLD_VERSION}) as a daemon (timeout ${BOOT_TIMEOUT}s)..."
 
-echo "Waiting for ${RELEASE_NAME} to come up (timeout ${BOOT_TIMEOUT}s)..."
-booted=false
-for ((i = 1; i <= BOOT_TIMEOUT; i++)); do
-  if ./bin/"${RELEASE_NAME}" pid >/dev/null 2>&1; then
-    booted=true
-    break
-  fi
-  sleep 1
-done
+# relx's own daemon subcommand already waits for the node to answer
+# before returning - its extended start script's own startup loop is
+# `while ! erl_rpc erlang is_alive; do sleep 1; done`, with no timeout
+# of its own at all. So boot-timeout-seconds has to bound that command
+# itself, not a separate polling loop run afterward: a node that never
+# comes up would otherwise hang the daemon call forever, and this
+# script's own timeout would never get a chance to apply, since nothing
+# after an unbounded blocking call ever runs. Same -k grace-period
+# reasoning as the upgrade eval call below.
+#
+# BOOT_TIMEOUT=0 is handled as a special case rather than passed to
+# timeout(1) directly: GNU coreutils' timeout treats a duration of 0 as
+# "no timeout" rather than an immediate one, the opposite of what
+# boot-timeout-seconds: "0" is documented to mean.
+if [ "$BOOT_TIMEOUT" -eq 0 ]; then
+  echo "::error title=Release did not boot::${RELEASE_NAME} did not boot within 0s."
+  exit 1
+fi
 
-if [ "$booted" != true ]; then
+set +e
+timeout -k 5 "${BOOT_TIMEOUT}" ./bin/"${RELEASE_NAME}" daemon
+DAEMON_EXIT=$?
+set -e
+
+if [ "$DAEMON_EXIT" -ne 0 ]; then
   echo "::error title=Release did not boot::${RELEASE_NAME} did not boot within ${BOOT_TIMEOUT}s."
   exit 1
 fi
