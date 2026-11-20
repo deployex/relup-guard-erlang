@@ -32,7 +32,8 @@ init([]) ->
         period => 1
     },
     ChildSpecs = [
-        #{id => relup_worker, start => {relup_worker, start_link, []}}
+        #{id => relup_worker, start => {relup_worker, start_link, []}},
+        #{id => relup_stuck_worker, start => {relup_stuck_worker, start_link, []}}
     ],
     {ok, {SupFlags, ChildSpecs}}.
 
