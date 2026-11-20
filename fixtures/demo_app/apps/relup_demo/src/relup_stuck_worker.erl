@@ -29,7 +29,7 @@
 %% between old-ref and new-ref never reaches that code path at all.
 
 -export([start_link/0]).
--export([init/1, handle_call/3, handle_cast/2]).
+-export([init/1, handle_call/3, handle_cast/2, code_change/3]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -46,3 +46,14 @@ handle_cast(get_stuck, State) ->
     after infinity -> ok
     end,
     {noreply, State}.
+
+%% Elixir's `use GenServer` macro injects a default code_change/3 for
+%% every GenServer module whether the author writes one or not; plain
+%% Erlang gen_server has no such injection. Without this function,
+%% rebar3_appup_plugin's own is_code_change/1 check finds no code_change
+%% export and emits a plain {load_module, ...} instead of {update, Mod,
+%% {advanced, []}, ...} - a load_module never suspends anything at all,
+%% so the upgrade would "succeed" instantly rather than ever attempting
+%% the suspend this fixture exists to block.
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.

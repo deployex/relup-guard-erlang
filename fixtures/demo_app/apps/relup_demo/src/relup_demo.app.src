@@ -1,6 +1,6 @@
 {application, relup_demo, [
     {description, "An OTP application"},
-    {vsn, "0.2.1"},
+    {vsn, "0.2.2"},
     {registered, []},
     {mod, {relup_demo_app, []}},
     {applications, [
