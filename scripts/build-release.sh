@@ -75,14 +75,31 @@ if [ ! -f "$NESTED_REL" ]; then
 fi
 cp "$NESTED_REL" "${RELEASE_ROOT}/releases/${RELEASE_NAME}-${VERSION}.rel"
 
-# Only when building new-ref (old-ref has nothing to diff against yet):
-# generate the .appup rebar3_appup_plugin's own provider_hooks.tar hook
-# does NOT produce (that hook does a different thing - state record
-# migration code injection, not appup diffing), then copy it from the
-# plugin's shared, unversioned output location into the assembled
-# release's own versioned lib dir, where release_handler expects to find
-# it once this tarball is unpacked onto a running node.
-if [ -n "$PREVIOUS_VERSION" ]; then
+# Only when building new-ref (old-ref has nothing to diff against yet).
+#
+# A plugin that hooks appup generation into the normal build - e.g.
+# rebar3_jellyfish_plugin's {provider_hooks, [{post, [{compile, ...}]}]}
+# - already left a .appup under each changed app's own versioned
+# lib/<app>-<vsn>/ebin/ by the time "$BUILD_COMMAND" above returns.
+# There's nothing left for this step to do in that case, and it must not
+# try anyway: rebar3_appup_plugin is the only thing that understands the
+# `rebar3 appup generate --previous/--current` invocation below, so
+# running it unconditionally fails outright - "Command appup not found" -
+# for any project using a different (or no) appup-generating plugin.
+#
+# rebar3_appup_plugin itself needs this explicit call: its own
+# provider_hooks.tar hook does a different thing (state record migration
+# code injection, not appup diffing), and it writes what it generates to
+# a shared, unversioned location keyed by RELEASE_NAME - which only
+# lines up with an actual OTP application when the release is a
+# single-app one named after that application. Multi-app/umbrella
+# projects aren't supported by this fallback; use a hook-based plugin
+# for those instead.
+shopt -s nullglob
+EXISTING_APPUPS=("${RELEASE_ROOT}"/lib/*-"${VERSION}"/ebin/*.appup)
+shopt -u nullglob
+
+if [ -n "$PREVIOUS_VERSION" ] && [ "${#EXISTING_APPUPS[@]}" -eq 0 ]; then
   bash -euo pipefail -c "rebar3 as ${PROFILE} appup generate --previous ${RELEASE_ROOT} --previous_version ${PREVIOUS_VERSION} --current ${RELEASE_ROOT}"
 
   GENERATED_APPUP="_build/${PROFILE}/lib/${RELEASE_NAME}/ebin/${RELEASE_NAME}.appup"
@@ -92,6 +109,8 @@ if [ -n "$PREVIOUS_VERSION" ]; then
   fi
 
   cp "$GENERATED_APPUP" "${RELEASE_ROOT}/lib/${RELEASE_NAME}-${VERSION}/ebin/${RELEASE_NAME}.appup"
+elif [ -n "$PREVIOUS_VERSION" ]; then
+  echo "Found $(IFS=,; echo "${EXISTING_APPUPS[*]}") already under ${RELEASE_ROOT}/lib - skipping rebar3_appup_plugin's explicit 'appup generate' step."
 fi
 
 # Packaged with plain tar, not 'rebar3 ... tar': that command always
