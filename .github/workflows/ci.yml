@@ -1,0 +1,294 @@
+name: Self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: shellcheck scripts/*.sh
+
+  self-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # rebar3/relx against both OTP lines the fixture's own
+        # .tool-versions targets, not just the one it happened to be
+        # compiled with.
+        otp-version: ["28", "29"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp-version }}
+          rebar3-version: "3.28.0"
+
+      - uses: ./
+        with:
+          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          new-ref: ${{ github.sha }}
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+
+  # new-ref's own documented default is "HEAD". This job exercises that
+  # default directly (by omitting new-ref), rather than only ever passing
+  # it explicitly the way the job above does.
+  self-test-default-new-ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          rebar3-version: "3.28.0"
+
+      - uses: ./
+        with:
+          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          # new-ref deliberately omitted - relying on the documented default.
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+
+  # Every job above only ever asserts success. old-ref and new-ref
+  # identical can't possibly produce two different versions to relup
+  # between, so relup-guard-erlang must refuse to proceed - asserted here
+  # with continue-on-error plus a follow-up step that fails the job if it
+  # unexpectedly didn't.
+  self-test-identical-refs-fail:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          rebar3-version: "3.28.0"
+
+      - name: relup-guard-erlang (expected to fail - old-ref and new-ref are identical)
+        id: relup-guard-erlang
+        continue-on-error: true
+        uses: ./
+        with:
+          old-ref: ${{ github.sha }}
+          new-ref: ${{ github.sha }}
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+
+      - name: Assert it actually failed
+        if: steps.relup-guard-erlang.outcome != 'failure'
+        run: |
+          echo "::error::relup-guard-erlang was expected to fail (old-ref and new-ref are identical, so there's no second version to relup against), but its outcome was '${{ steps.relup-guard-erlang.outcome }}' instead."
+          exit 1
+
+  # Another negative test: an unresolvable ref (most commonly a checkout
+  # missing fetch-depth: 0) must fail with a clear reason naming the
+  # actual cause. No erlef/setup-beam here on purpose - ref resolution
+  # happens in plain git, before anything Erlang-related runs, so this
+  # failure mode doesn't need a BEAM toolchain to exercise or to stay fast.
+  self-test-unresolvable-ref-fails:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: relup-guard-erlang (expected to fail - old-ref does not exist)
+        id: relup-guard-erlang
+        continue-on-error: true
+        uses: ./
+        with:
+          old-ref: this-ref-does-not-exist-anywhere
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+
+      - name: Assert it actually failed
+        if: steps.relup-guard-erlang.outcome != 'failure'
+        run: |
+          echo "::error::relup-guard-erlang was expected to fail (old-ref doesn't resolve to any commit), but its outcome was '${{ steps.relup-guard-erlang.outcome }}' instead."
+          exit 1
+
+  # boot-timeout-seconds: "0" is a deterministic way to force this
+  # failure, not a flaky race against how fast the runner happens to boot
+  # the release: the wait loop is `for ((i = 1; i <= BOOT_TIMEOUT; i++))`,
+  # so BOOT_TIMEOUT=0 makes that loop's own condition (1 <= 0) false
+  # before its first iteration - guaranteed to never check the pid even
+  # once, regardless of actual boot speed.
+  self-test-boot-timeout-fails:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          rebar3-version: "3.28.0"
+
+      - name: relup-guard-erlang (expected to fail - boot-timeout-seconds is 0)
+        id: relup-guard-erlang
+        continue-on-error: true
+        uses: ./
+        with:
+          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          new-ref: ${{ github.sha }}
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+          boot-timeout-seconds: "0"
+
+      - name: Assert it actually failed
+        if: steps.relup-guard-erlang.outcome != 'failure'
+        run: |
+          echo "::error::relup-guard-erlang was expected to fail (boot-timeout-seconds: 0 can never observe the release boot in time), but its outcome was '${{ steps.relup-guard-erlang.outcome }}' instead."
+          exit 1
+
+  # fixtures/demo_app's relup_worker2 is a standalone module nothing
+  # starts, with no corresponding appup apply instruction, deliberately,
+  # to let CI exercise the "relup loads a module but never starts it"
+  # check for real. Two jobs, covering both directions of
+  # fail-on-relup-warnings:
+  self-test-unstarted-module-warns:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          rebar3-version: "3.28.0"
+
+      - name: relup-guard-erlang
+        id: relup-guard-erlang
+        uses: ./
+        with:
+          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6 # relup_worker2 does not exist yet
+          new-ref: ${{ github.sha }} # relup_worker2 added with no apply instruction
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+          # fail-on-relup-warnings left at its default (false): this
+          # must still succeed, with the warning only annotated.
+
+      # A success here with a warning raised anyway must be
+      # distinguishable from a plain, warning-free success - the whole
+      # reason the had-warnings output exists. Checked via that output
+      # rather than the rendered $GITHUB_STEP_SUMMARY: step summaries are
+      # scoped to the step that wrote them, so a later, separate step
+      # like this one can't read back what an earlier step wrote through
+      # that same env var.
+      - name: Assert had-warnings is true, not a plain success
+        if: steps.relup-guard-erlang.outputs.had-warnings != 'true'
+        run: |
+          echo "::error::Expected had-warnings=true for this run (old-ref/new-ref deliberately differ only by an unstarted module), but got '${{ steps.relup-guard-erlang.outputs.had-warnings }}' instead."
+          exit 1
+
+  self-test-unstarted-module-fails-when-strict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          rebar3-version: "3.28.0"
+
+      - name: relup-guard-erlang (expected to fail - fail-on-relup-warnings is true)
+        id: relup-guard-erlang
+        continue-on-error: true
+        uses: ./
+        with:
+          old-ref: 50a0c9248519966f95cd19682aa12eba7b10dfe6
+          new-ref: ${{ github.sha }}
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+          fail-on-relup-warnings: "true"
+
+      - name: Assert it actually failed
+        if: steps.relup-guard-erlang.outcome != 'failure'
+        run: |
+          echo "::error::relup-guard-erlang was expected to fail (fail-on-relup-warnings: true turns the unstarted-module warning into a failure), but its outcome was '${{ steps.relup-guard-erlang.outcome }}' instead."
+          exit 1
+
+  # upgrade-timeout-seconds has no input-value trick like
+  # boot-timeout-seconds' "0" - GNU timeout(1) treats a duration of 0 as
+  # "no timeout" rather than an immediate one, the opposite of what a
+  # deterministic failure needs. Forcing this one for real needs a
+  # release that genuinely hangs release_handler's suspend step.
+  #
+  # relup_stuck_worker (fixtures/stuck-worker branch, NOT main) casts
+  # itself a message in init/1 whose handler does a bare
+  # `receive after infinity`: gen_server only answers :sys system
+  # messages (like the suspend request release_handler sends before a
+  # code_change) BETWEEN callback invocations, not while one is still
+  # running, so a callback that never returns blocks suspend forever.
+  # It has to be a supervised child, not started any other way:
+  # release_handler only attempts to suspend processes it can discover by
+  # walking the supervision tree, so an unsupervised process is never
+  # targeted by the relup's update instruction at all, and the upgrade
+  # just succeeds trivially instead.
+  #
+  # old-ref/new-ref are two sequential commits on fixtures/stuck-worker,
+  # not main: main's own HEAD-tracking jobs above would see this module
+  # too if it lived there, and a hang landing on main even transiently
+  # would break the whole self-test rather than just adding a warning the
+  # way relup_worker2 does. actions/checkout's own fetch-depth: 0 fetches
+  # every branch and tag, not just the triggering ref's history, so this
+  # job can still resolve that branch's commits from a checkout of main.
+  self-test-upgrade-timeout-fails:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          rebar3-version: "3.28.0"
+
+      - name: relup-guard-erlang (expected to fail - relup_stuck_worker can never acknowledge suspend)
+        id: relup-guard-erlang
+        continue-on-error: true
+        uses: ./
+        with:
+          old-ref: 57193e432d9e60f6d2698317f1812201a5eaf262 # fixtures/stuck-worker: relup_stuck_worker already stuck
+          new-ref: 708374cb42dd685d7e139c51844dceff97793d5c # fixtures/stuck-worker: relup_stuck_worker's code changed
+          release-name: relup_demo
+          working-directory: fixtures/demo_app
+          upgrade-timeout-seconds: "10"
+
+      - name: Assert it actually failed
+        if: steps.relup-guard-erlang.outcome != 'failure'
+        run: |
+          echo "::error::relup-guard-erlang was expected to fail (relup_stuck_worker can never acknowledge the suspend request, so the upgrade can only time out), but its outcome was '${{ steps.relup-guard-erlang.outcome }}' instead."
+          exit 1

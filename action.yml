@@ -1,0 +1,199 @@
+name: "relup-guard-erlang"
+description: "Verifies a BEAM hot code upgrade (relup) actually works, by building the old and new rebar3/relx release and running a real unpack/install/upgrade against a live node."
+author: "Thiago Esteves"
+branding:
+  icon: "refresh-cw"
+  color: "green"
+
+inputs:
+  old-ref:
+    description: >
+      Git ref/SHA to build as the "old" (currently deployed) release, e.g.
+      a pull request's base commit (github.event.pull_request.base.sha in
+      the calling workflow). Must be reachable in the checkout history, so
+      the calling workflow needs actions/checkout with fetch-depth: 0.
+    required: true
+  new-ref:
+    description: "Git ref/SHA to build as the new release being tested."
+    required: false
+    default: "HEAD"
+  release-name:
+    description: >
+      The release name as configured in rebar.config's relx release
+      tuple, e.g. "my_app".
+    required: true
+  profile:
+    description: "rebar3 profile used to build both releases."
+    required: false
+    default: "prod"
+  working-directory:
+    description: >
+      Directory containing the rebar.config that defines the release,
+      relative to the repository root. Use this when the release isn't
+      built from the repository root.
+    required: false
+    default: "."
+  build-command:
+    description: >
+      Shell command used to assemble (not package) the release, run once
+      per ref in the same working directory - must leave an ASSEMBLED
+      release under _build/<profile>/rel/<release-name>, not a tarball;
+      this action packages the tarball itself once it has also injected
+      the generated appup and a flat .rel file, both of which
+      release_handler needs and relx does not produce on its own.
+      Defaults to "rebar3 as <profile> release" with <profile> substituted
+      for whatever the profile input resolves to.
+    required: false
+  boot-timeout-seconds:
+    description: "How long to wait for the old release to boot before giving up."
+    required: false
+    default: "30"
+  upgrade-timeout-seconds:
+    description: >
+      How long to wait for the unpack/make_relup/install/make_permanent
+      sequence to finish before treating it as hung and failing fast,
+      instead of relying on the calling job's own timeout.
+    required: false
+    default: "60"
+  fail-on-relup-warnings:
+    description: >
+      Treat warnings from systools:make_relup/4, and relup-guard-erlang's
+      own "module loaded but possibly never started" check, as failures
+      (the same "warnings as errors" policy many build/lint tools offer),
+      rather than only annotating them. A relup can report warnings - most
+      often a dependency that bumped version with no .appup of its own, so
+      systools fell back to a cruder upgrade instruction than intended -
+      or load a newly-introduced module with no apply instruction anywhere
+      to actually start it as a process, while still technically
+      succeeding either way.
+    required: false
+    default: "false"
+
+outputs:
+  old-version:
+    description: "The version built from old-ref."
+    value: ${{ steps.build-old.outputs.version }}
+  new-version:
+    description: "The version built from new-ref."
+    value: ${{ steps.build-new.outputs.version }}
+  had-warnings:
+    description: >
+      "true" if the upgrade succeeded but systools reported relup
+      warnings, or the unstarted-module check fired - "false" otherwise.
+      Useful for asserting on the warning path without depending on
+      $GITHUB_STEP_SUMMARY, which is scoped to the step that wrote it and
+      can't be read back by a later, separate step.
+    value: ${{ steps.run-upgrade.outputs.had-warnings }}
+
+runs:
+  using: "composite"
+  steps:
+    # Fails fast with a clear reason instead of a confusing error several
+    # minutes into the build. run-upgrade.sh drives the release through
+    # relx's extended start script's daemon/pid/stop/eval subcommands,
+    # which only exist on the Unix-like release layout - relx builds a
+    # separate, different Windows service wrapper instead.
+    - name: Check runner OS
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        echo "::error title=Unsupported runner OS::relup-guard-erlang drives a release through relx's extended start script's daemon/pid/stop/eval subcommands, which only exist on the Unix-like release layout. Run this action on a Linux or macOS runner."
+        exit 1
+
+    # Resolves both refs to concrete SHAs against the pristine checkout
+    # the calling workflow set up, BEFORE anything moves the working tree.
+    # This matters for new-ref's own documented default of "HEAD": once
+    # old-ref has been checked out below, the literal string "HEAD" no
+    # longer means "the commit the job originally checked out" - it means
+    # "whatever we're currently sitting on", which by then is old-ref
+    # itself.
+    - name: Resolve old-ref and new-ref
+      id: resolve-refs
+      shell: bash
+      env:
+        OLD_REF: ${{ inputs.old-ref }}
+        NEW_REF: ${{ inputs.new-ref }}
+      run: '"${{ github.action_path }}/scripts/resolve-refs.sh" "$OLD_REF" "$NEW_REF"'
+
+    # old-ref and new-ref are built sequentially in the same working
+    # directory/_build (not isolated worktrees): relx preserves each
+    # version's own releases/<vsn>/ and lib/<app>-<vsn>/ directories across
+    # in-place rebuilds in the same profile, which rebar3_appup_plugin
+    # needs to diff old against new, the same way Jellyfish relies on the
+    # equivalent behavior for Mix.
+    #
+    # Every input/output used below is passed through env: and read back as
+    # a shell variable rather than interpolated straight into `run:`.
+    # A ${{ }} expression substituted directly into a run: script is
+    # attacker-controlled template injection if any caller ever feeds it a
+    # value derived from PR content (title, branch name, label, etc.) -
+    # GitHub's own security hardening guide for Actions calls this out
+    # explicitly, and it is the single most common finding tools like
+    # zizmor flag in composite actions. github.action_path is a
+    # runner-provided, non-attacker-controlled context, so it is exempt.
+    - name: Build old release (${{ inputs.old-ref }})
+      id: build-old
+      shell: bash
+      env:
+        REF: ${{ steps.resolve-refs.outputs.old-sha }}
+        RELEASE_NAME: ${{ inputs.release-name }}
+        PROFILE: ${{ inputs.profile }}
+        BUILD_COMMAND: ${{ inputs.build-command }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: '"${{ github.action_path }}/scripts/build-release.sh" "$REF" "$RELEASE_NAME" "$PROFILE" "$BUILD_COMMAND" "" "$WORKING_DIRECTORY" ""'
+
+    - name: Build new release (${{ inputs.new-ref }})
+      id: build-new
+      shell: bash
+      env:
+        REF: ${{ steps.resolve-refs.outputs.new-sha }}
+        RELEASE_NAME: ${{ inputs.release-name }}
+        PROFILE: ${{ inputs.profile }}
+        BUILD_COMMAND: ${{ inputs.build-command }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        OLD_VERSION: ${{ steps.build-old.outputs.version }}
+      run: '"${{ github.action_path }}/scripts/build-release.sh" "$REF" "$RELEASE_NAME" "$PROFILE" "$BUILD_COMMAND" "$OLD_VERSION" "$WORKING_DIRECTORY" "$OLD_VERSION"'
+
+    - name: Check old-ref and new-ref actually differ
+      shell: bash
+      env:
+        OLD_VERSION: ${{ steps.build-old.outputs.version }}
+        NEW_VERSION: ${{ steps.build-new.outputs.version }}
+      run: |
+        if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+          echo "::error title=old-ref and new-ref produced the same version::Both resolved to ${NEW_VERSION}. Bump the release's app.src vsn so a relup can be generated and tested."
+          exit 1
+        fi
+
+    - name: Run the upgrade for real
+      id: run-upgrade
+      shell: bash
+      env:
+        RELEASE_NAME: ${{ inputs.release-name }}
+        OLD_TARBALL: ${{ steps.build-old.outputs.tarball }}
+        NEW_TARBALL: ${{ steps.build-new.outputs.tarball }}
+        OLD_VERSION: ${{ steps.build-old.outputs.version }}
+        NEW_VERSION: ${{ steps.build-new.outputs.version }}
+        BOOT_TIMEOUT_SECONDS: ${{ inputs.boot-timeout-seconds }}
+        UPGRADE_TIMEOUT_SECONDS: ${{ inputs.upgrade-timeout-seconds }}
+        FAIL_ON_WARNINGS: ${{ inputs.fail-on-relup-warnings }}
+      run: '"${{ github.action_path }}/scripts/run-upgrade.sh" "$RELEASE_NAME" "$OLD_TARBALL" "$NEW_TARBALL" "$OLD_VERSION" "$NEW_VERSION" "$BOOT_TIMEOUT_SECONDS" "$UPGRADE_TIMEOUT_SECONDS" "$FAIL_ON_WARNINGS"'
+
+    # Writes a human-readable result to the job's own Summary tab, the same
+    # convention actions/cache and many other popular actions follow via
+    # $GITHUB_STEP_SUMMARY - so old-version/new-version/pass-fail are visible
+    # at a glance without opening raw step logs. Runs with always() and
+    # guards every value, since a failure in an earlier step must still
+    # produce a summary (showing what's known and that it failed), and must
+    # never itself mask that failure by erroring out.
+    - name: Write job summary
+      if: always()
+      shell: bash
+      env:
+        OLD_REF: ${{ inputs.old-ref }}
+        NEW_REF: ${{ inputs.new-ref }}
+        OLD_VERSION: ${{ steps.build-old.outputs.version }}
+        NEW_VERSION: ${{ steps.build-new.outputs.version }}
+        OUTCOME: ${{ steps.run-upgrade.outcome }}
+        HAD_WARNINGS: ${{ steps.run-upgrade.outputs.had-warnings }}
+      run: '"${{ github.action_path }}/scripts/write-summary.sh" "$OLD_REF" "$NEW_REF" "$OLD_VERSION" "$NEW_VERSION" "$OUTCOME" "$HAD_WARNINGS"'

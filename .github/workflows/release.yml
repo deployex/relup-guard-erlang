@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # workflow_dispatch lets the person running it pick any branch from
+      # the GitHub UI - without this, selecting a feature branch by
+      # mistake would tag and publish it as a release.
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are only cut from main (got ${{ github.ref }}). Re-run this workflow with main selected as the branch."
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      # git tag -a (an annotated tag, which `make release` creates) needs
+      # a committer identity configured - actions/checkout doesn't set one.
+      - name: Configure git identity for the release tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: make release VERSION="$VERSION"

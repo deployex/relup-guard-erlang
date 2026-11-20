@@ -1,0 +1,6 @@
+-sname relup_demo
+
+-setcookie relup_demo_cookie
+
++K true
++A30

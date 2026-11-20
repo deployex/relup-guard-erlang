@@ -1,0 +1,14 @@
+{application, relup_demo, [
+    {description, "An OTP application"},
+    {vsn, "0.2.0"},
+    {registered, []},
+    {mod, {relup_demo_app, []}},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+ ]}.
