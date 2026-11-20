@@ -13,6 +13,23 @@ They never check that an upgrade into it actually *applies* against a live node.
 `relup-guard-erlang` closes that gap: it builds the release at your PR's base ref and at its head in the same working directory (so rebar3 appup tooling can see both), boots the old release, and drives the same sequence a real deploy does - unpack, synthesize the relup, `check_install_release`, `install_release`, `make_permanent` - against it.
 If any step fails, the PR fails, before the broken upgrade ever reaches production.
 
+```mermaid
+flowchart TB
+    subgraph build["Build both releases (sequentially, same working directory)"]
+        A["old-ref"] --> A1["rebar3 release<br/>+ build-only vsn suffix"]
+        B["new-ref"] --> B1["rebar3 release<br/>+ build-only vsn suffix<br/>+ generate .appup vs old"]
+    end
+
+    A1 --> C["Boot old release<br/>as an isolated daemon"]
+    B1 --> D["Unpack new release<br/>into the running node"]
+    C --> D
+    D --> E["Synthesize the relup<br/>systools:make_relup/4"]
+    E --> F["Apply it for real<br/>check_install_release → install_release → make_permanent"]
+    F --> G{"New version running?<br/>Same OS pid?"}
+    G -->|yes| H["✅ Pass"]
+    G -->|no / timeout| I["❌ Fail"]
+```
+
 ## Prerequisites
 
 Your project needs the following already in place; `relup-guard-erlang` does not set any of it up for you.
