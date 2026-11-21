@@ -110,7 +110,51 @@ DAEMON_EXIT=$?
 set -e
 
 if [ "$DAEMON_EXIT" -ne 0 ]; then
-  echo "::error title=Release did not boot::${RELEASE_NAME} did not boot within ${BOOT_TIMEOUT}s."
+  # The daemon subcommand backgrounds the node under run_erl, which
+  # captures erl's own stdout/stderr - including anything printed before
+  # the node answers is_alive at all, such as a vm.args line erl itself
+  # couldn't use, or an application crashing on start (e.g. a
+  # list_to_integer/badarg on an env var the release assumes is always
+  # set) - into a rotating log under RUNNER_LOG_DIR, which defaults to
+  # this extracted release's own "log" directory. Printed here, not just
+  # left on disk for someone to go find: this is the one failure this
+  # script otherwise has no structured reason for at all, since nothing
+  # before the node is confirmed alive ever gets a chance to report
+  # anything back through release_handler. Confirmed locally against a
+  # release whose application deliberately crashes on an unset env var
+  # (the same shape of bug a real consumer of this action hit in
+  # practice): the badarg and the env var's name both show up in this
+  # log, where a plain "did not boot" message would have hidden them.
+  LOG_DIR="${RUNNER_LOG_DIR:-$(pwd)/log}"
+  LATEST_LOG=""
+  if [ -d "$LOG_DIR" ]; then
+    # Sorted with -V (version/numeric-aware), not plain sort or ls -t: run_erl
+    # names these erlang.log.1, .2, ... and the highest-numbered one is the
+    # one currently being written to - a plain lexical sort would put
+    # erlang.log.10 before erlang.log.2.
+    LATEST_LOG=$(find "$LOG_DIR" -maxdepth 1 -name 'erlang.log.*' 2>/dev/null | sort -V | tail -n1 || true)
+  fi
+  if [ -n "$LATEST_LOG" ] && [ -s "$LATEST_LOG" ]; then
+    echo "----- Last lines of ${LATEST_LOG} (this is almost always where the real reason is) -----"
+    tail -n 50 "$LATEST_LOG"
+    echo "----- End of ${LATEST_LOG} -----"
+  else
+    echo "No boot log was found under ${LOG_DIR} - the node likely never got far enough for run_erl to write one at all (e.g. bin/${RELEASE_NAME} itself failed to exec)."
+  fi
+
+  # erl_crash.dump means the emulator itself went down, not just an
+  # application process failing inside a supervision tree - run_erl execs
+  # erl with its cwd unchanged from this script's own, so that's where the
+  # dump lands if one is written at all. Only a short excerpt: these dumps
+  # can run to many megabytes, and the slogan/reason is always at the top.
+  CRASH_DUMP="$(pwd)/erl_crash.dump"
+  if [ -f "$CRASH_DUMP" ]; then
+    echo "----- erl_crash.dump was written at ${CRASH_DUMP} - first lines -----"
+    head -n 40 "$CRASH_DUMP"
+    echo "----- End of erl_crash.dump excerpt -----"
+  fi
+
+  echo "::error title=Release did not boot::${RELEASE_NAME} did not boot within ${BOOT_TIMEOUT}s. See the boot log (and crash dump, if any) printed above for the actual reason, rather than treating this as a generic timeout. A common real-world cause: a vm.args line with a \${SOME_VAR} placeholder that was never substituted because RELX_REPLACE_OS_VARS wasn't set to \"true\" with that variable supplied as env: on this step, or an application that crashes outright when an env var it assumes is always set is missing - see the README's 'Booting a release that needs environment variables' section. The log above can contain whatever your own application logged or crashed on, including a secret it fetched itself rather than one that came in through this step's own env: - mask that yourself with ::add-mask:: if that's a risk for your release, the same as for an upgrade-time crash (see the README)."
   exit 1
 fi
 echo "Node is up."
