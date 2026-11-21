@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.1
+
+### Fixed
+
+- `run-upgrade.sh` now prints the tail of the daemon's own boot log, and the head of `erl_crash.dump` if present, before failing on a boot timeout, instead of only reporting a generic "did not boot within Ns" message.
+  Both already capture the real reason in the common failure modes - an unresolved `vm.args` placeholder, an application crashing on a missing env var, a release built for the wrong ERTS version - so this surfaces it instead of leaving trial and error as the only way to find it.
+
+### Changed
+
+- README documents GitHub Actions workflow dependency lockfiles as a third pinning option alongside tag-pinning and SHA-pinning, noting this repository hasn't adopted one yet.
+
 ## 1.1.0
 
 ### Added
